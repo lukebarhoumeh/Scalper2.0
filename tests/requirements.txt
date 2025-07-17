@@ -1,0 +1,9 @@
+# requirements.txt  – ScalperBot 2.0 minimal runtime stack
+pandas>=2.2.2
+numpy>=1.26.4
+ta>=0.11.0              # technical-analysis indicators (builds on pandas & numpy)
+python-dateutil>=2.9.0
+six>=1.16.0             # transient dep of python-dateutil but pinned to avoid misses
+python-dotenv>=1.0.1
+openai>=1.25.0
+coinbase-advanced-py>=0.1.5
