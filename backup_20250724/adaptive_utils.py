@@ -37,11 +37,27 @@ def vol_scaled_size(realised_vol_pct: float) -> float:
 
 def inventory_allows(executor, product_id: str, side: str, usd_notional: float) -> bool:
     """
-    Enforce INVENTORY_CAP_USD. Skip BUY if long exposure would exceed cap.
-    Force SELL if long exposure > cap.
+    FIXED: Enforce strict position limits to prevent directional bias.
+    Check both long and short position limits per coin.
     """
-    current = executor.position_usd(product_id)
+    from config import PER_COIN_POSITION_LIMIT, INVENTORY_CAP_USD
+    
+    current_usd = executor.position_usd(product_id)
+    
+    # Use the stricter of the two limits
+    position_limit = min(PER_COIN_POSITION_LIMIT, INVENTORY_CAP_USD)
+    
     if side == "BUY":
-        return (current + usd_notional) <= INVENTORY_CAP_USD
+        # Prevent excessive long positions
+        new_position = current_usd + usd_notional
+        if new_position > position_limit:
+            return False
+        # Also check if already short - allow buys to reduce short position
+        return True
     else:  # SELL
-        return True  # always allow sell
+        # Prevent excessive short positions
+        new_position = current_usd - usd_notional
+        if new_position < -position_limit:
+            return False
+        # Also check if already long - allow sells to reduce long position  
+        return True
