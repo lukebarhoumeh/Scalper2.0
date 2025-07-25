@@ -62,7 +62,7 @@ COINBASE_API_KEY=mock_key_for_testing
 COINBASE_API_SECRET=mock_secret_for_testing
 
 # OpenAI still works for analysis
-OPENAI_API_KEY=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
+OPENAI_API_KEY=your_openai_api_key_here
 
 # Performance optimizations
 POLL_INTERVAL_SEC=60

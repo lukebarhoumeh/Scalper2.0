@@ -65,9 +65,9 @@ def create_optimized_config():
     
     optimized_env = """# ─── PERFORMANCE OPTIMIZED CONFIGURATION ─────────────────────────────────────────
 # Load existing credentials
-COINBASE_API_KEY=880b1c4f-ec34-40e8-8e9d-76e134e87918/apiKeys/96a83f0f-3c6b-43a2-a7be-70dd5a1940e5
-COINBASE_API_SECRET=-----BEGIN EC PRIVATE KEY-----\\nMHcCAQEEIC5KeAd7qlUJi1u9zjIGXvYh3atZy714dcyvHbZL1t0xoAoGCCqGSM49\\nAwEHoUQDQgAE7OnGmg5lMUPcu39EAHdsucjVIj0WNkvUlYejnq/lMdHAY5RQ+qYW\\nmATFdglJntCTB5LOqt6g0HIC/lBa5z3WoQ==\\n-----END EC PRIVATE KEY-----
-OPENAI_API_KEY=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
+COINBASE_API_KEY=your_coinbase_api_key_here
+COINBASE_API_SECRET=your_coinbase_api_secret_here
+OPENAI_API_KEY=your_openai_api_key_here
 
 # ─── PERFORMANCE OPTIMIZATIONS ─────────────────────────────────────────────────
 # Reduce API call frequency for better performance
