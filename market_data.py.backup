@@ -23,14 +23,14 @@ from config import (
     USE_WS_FEED,
 )
 
-# ────── PERFORMANCE OPTIMIZATIONS ──────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 # Logging
-# ────── PERFORMANCE OPTIMIZATIONS ──────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 _LOG = logging.getLogger(__name__)
 
-# ────── PERFORMANCE OPTIMIZATIONS ──────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 # Timeout wrapper for REST API calls
-# ────── PERFORMANCE OPTIMIZATIONS ──────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 class TimeoutException(Exception):
     pass
 
@@ -70,7 +70,7 @@ def with_timeout(timeout_seconds):
 class RESTClientPool:
     """Thread-safe connection pool with health monitoring and auto-recovery."""
     
-    def __init__(self, pool_size: int = 5):  # Increased pool size
+    def __init__(self, pool_size: int = 10):  # Increased pool size
         self._pool = queue.Queue(maxsize=pool_size)
         self._pool_size = pool_size
         self._lock = threading.RLock()
@@ -78,7 +78,7 @@ class RESTClientPool:
         self._last_health_check = time.time()
         self._health_check_interval = 60  # 1 minute - more frequent checks
         self._client_ages = {}  # Track client creation times
-        self._max_client_age = 180  # 5 minutes max lifetime - prevent stale connections
+        self._max_client_age = 300  # 5 minutes max lifetime - prevent stale connections
         self._emergency_clients = set()  # Track emergency clients
         self._max_emergency_clients = 5  # Limit emergency clients
         
@@ -508,9 +508,9 @@ def _cache_cleanup_loop():
 
 threading.Thread(target=_cache_cleanup_loop, daemon=True).start()
 
-# ────── PERFORMANCE OPTIMIZATIONS ──────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 # Market Data Manager for Adaptive System
-# ────── PERFORMANCE OPTIMIZATIONS ──────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 
 class MarketDataManager:
     """
@@ -609,9 +609,9 @@ class MarketDataManager:
             }
 
 
-# ────── PERFORMANCE OPTIMIZATIONS ──────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 # Standalone function for external imports
-# ────── PERFORMANCE OPTIMIZATIONS ──────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 def get_candles(product_id: str, granularity: int = 3600, limit: int = 24) -> List[Dict]:
     """
     Get OHLCV candle data for a given product.

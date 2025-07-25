@@ -280,6 +280,13 @@ class TerminalUIIntegration:
         trade['timestamp'] = datetime.now()
         self.ui.update_data(trade=trade)
     
+    def update_trades(self, trades: List):
+        """Update recent trades list"""
+        for trade in trades:
+            if 'timestamp' not in trade:
+                trade['timestamp'] = datetime.now()
+            self.ui.update_data(trade=trade)
+    
     def log_signal(self, signal: Dict):
         """Log a new signal"""
         signal['timestamp'] = datetime.now()
@@ -288,6 +295,15 @@ class TerminalUIIntegration:
     def update_market(self, market_data: Dict):
         """Update market data"""
         self.ui.update_data(market=market_data)
+    
+    def update_market_overview(self, market_data: Dict):
+        """Update market overview data"""
+        # Store market overview in stats for the UI to display
+        overview_stats = {
+            'market_overview': market_data,
+            'last_market_update': datetime.now()
+        }
+        self.ui.update_data(stats=overview_stats)
     
     def update_health(self, health: Dict):
         """Update system health"""

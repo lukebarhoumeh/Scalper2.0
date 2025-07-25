@@ -25,29 +25,24 @@ import openai
 # Initialize colorama for Windows
 colorama_init()
 
-# Configuration
-PAPER_TRADING = os.getenv('PAPER_TRADING', 'true').lower() == 'true'
-TRADE_COINS = ["BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD", "AVAX-USD"]
+# Import configuration
+from config_unified import (
+    CB_API_KEY, CB_API_SECRET, OPENAI_API_KEY,
+    TRADING_PAIRS, BASE_POSITION_SIZE, MAX_POSITION_SIZE, INVENTORY_CAP_USD,
+    STARTING_CAPITAL, MAX_DAILY_CAPITAL, RSI_BUY_THRESHOLD, RSI_SELL_THRESHOLD,
+    SMA_FAST, SMA_SLOW, MIN_PRICE_HISTORY, MIN_SPREAD_BPS, MAX_SPREAD_BPS,
+    PAPER_TRADING, MAX_TRADES_PER_HOUR, MAX_CONSECUTIVE_LOSSES,
+    PROFIT_WITHDRAWAL_PERCENT, MIN_PROFIT_FOR_WITHDRAWAL,
+    validate_config
+)
 
-# Trading Parameters
-BASE_POSITION_SIZE = 75.0  # USD per trade
-MAX_POSITION_SIZE = 200.0  # Max USD per coin
-INVENTORY_CAP_USD = 600.0  # Total max inventory
-STARTING_CAPITAL = 1000.0
-MAX_DAILY_CAPITAL = 1500.0
+# Import trade logger
+from trade_logger import get_trade_logger, log_trade, log_signal
 
-# Signal Parameters
-MIN_SPREAD_BPS = 30  # 0.3% minimum spread for entry
-MAX_SPREAD_BPS = 150  # 1.5% max spread (dynamic)
-RSI_BUY_THRESHOLD = 35
-RSI_SELL_THRESHOLD = 65
-SMA_FAST = 5
-SMA_SLOW = 20
-MIN_PRICE_HISTORY = 20
-
-# Profit Preservation
-PROFIT_WITHDRAWAL_PERCENT = 0.50  # Withdraw 50% of profits at end of day
-MIN_PROFIT_FOR_WITHDRAWAL = 50.0  # Minimum profit before withdrawal
+# Validate configuration on startup
+config_errors = validate_config()
+if config_errors:
+    print(f"{Fore.YELLOW}Configuration warnings: {'; '.join(config_errors)}{Style.RESET_ALL}")
 
 # Logging setup
 logging.basicConfig(
@@ -57,6 +52,7 @@ logging.basicConfig(
 logger = logging.getLogger('UnifiedScalperBot')
 
 # File logger for debugging
+os.makedirs('logs', exist_ok=True)
 file_handler = logging.FileHandler(f'logs/unified_bot_{datetime.now().strftime("%Y%m%d")}.log')
 file_handler.setLevel(logging.DEBUG)
 logger.addHandler(file_handler)
@@ -98,7 +94,7 @@ class UnifiedScalperBot:
         self.running = False
         
         # Market data
-        self.market_snapshots: Dict[str, MarketSnapshot] = {coin: MarketSnapshot() for coin in TRADE_COINS}
+        self.market_snapshots: Dict[str, MarketSnapshot] = {coin: MarketSnapshot() for coin in TRADING_PAIRS}
         self.price_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
         self.spread_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
         
@@ -123,6 +119,15 @@ class UnifiedScalperBot:
             "aggressive": 1.5
         }
         
+        # Circuit breaker state
+        self.trades_this_hour = deque(maxlen=MAX_TRADES_PER_HOUR)
+        self.consecutive_losses = 0
+        self.circuit_breaker_active = False
+        self.circuit_breaker_until = None
+        
+        # Trade logger
+        self.trade_logger = get_trade_logger()
+        
         # Initialize components
         self._init_api_clients()
         self._init_ui()
@@ -132,15 +137,12 @@ class UnifiedScalperBot:
     def _init_api_clients(self):
         """Initialize API clients"""
         # Coinbase REST client
-        api_key = os.getenv('CB_API_KEY')
-        api_secret = os.getenv('CB_API_SECRET')
-        
-        if not api_key or not api_secret:
+        if not CB_API_KEY or not CB_API_SECRET:
             logger.warning(f"{Fore.YELLOW}No Coinbase API credentials found. Running in simulation mode.{Style.RESET_ALL}")
             self.rest_client = None
         else:
             try:
-                self.rest_client = RESTClient(api_key=api_key, api_secret=api_secret)
+                self.rest_client = RESTClient(api_key=CB_API_KEY, api_secret=CB_API_SECRET)
                 # Test connection
                 self.rest_client.get_accounts()
                 logger.info(f"{Fore.GREEN}Coinbase API connected successfully{Style.RESET_ALL}")
@@ -149,10 +151,9 @@ class UnifiedScalperBot:
                 self.rest_client = None
         
         # OpenAI client
-        openai_key = os.getenv('OPENAI_API_KEY')
-        if openai_key:
+        if OPENAI_API_KEY:
             try:
-                openai.api_key = openai_key
+                openai.api_key = OPENAI_API_KEY
                 self.openai_client = openai
                 logger.info(f"{Fore.GREEN}OpenAI API configured{Style.RESET_ALL}")
             except Exception as e:
@@ -180,7 +181,7 @@ class UnifiedScalperBot:
         """Fetch latest market data"""
         try:
             if self.rest_client:
-                for product_id in TRADE_COINS:
+                for product_id in TRADING_PAIRS:
                     try:
                         # Get ticker data
                         ticker = self.rest_client.get_product(product_id)
@@ -253,7 +254,7 @@ class UnifiedScalperBot:
             "AVAX-USD": 35
         }
         
-        for product_id in TRADE_COINS:
+        for product_id in TRADING_PAIRS:
             snapshot = self.market_snapshots[product_id]
             base_price = base_prices[product_id]
             
@@ -325,7 +326,7 @@ class UnifiedScalperBot:
         """Generate trading signals"""
         signals = []
         
-        for product_id in TRADE_COINS:
+        for product_id in TRADING_PAIRS:
             try:
                 snapshot = self.market_snapshots[product_id]
                 
@@ -409,10 +410,28 @@ class UnifiedScalperBot:
                 
                 # Log why we didn't generate a signal
                 if not any(s.product_id == product_id for s in signals):
+                    rejection_reason = ""
                     if sma_fast <= sma_slow:
-                        self.signal_rejections[product_id].append(f"No trend: SMA {sma_fast:.2f} <= {sma_slow:.2f}")
+                        rejection_reason = f"No trend: SMA {sma_fast:.2f} <= {sma_slow:.2f}"
                     elif rsi >= RSI_BUY_THRESHOLD and rsi <= RSI_SELL_THRESHOLD:
-                        self.signal_rejections[product_id].append(f"RSI neutral: {rsi:.1f}")
+                        rejection_reason = f"RSI neutral: {rsi:.1f}"
+                    
+                    if rejection_reason:
+                        self.signal_rejections[product_id].append(rejection_reason)
+                        
+                        # Log rejected signal
+                        log_signal({
+                            'product_id': product_id,
+                            'action': 'none',
+                            'confidence': 0,
+                            'reason': rejection_reason,
+                            'executed': False,
+                            'rejection_reason': rejection_reason,
+                            'spread_bps': snapshot.spread_bps,
+                            'rsi': rsi,
+                            'sma_fast': sma_fast,
+                            'sma_slow': sma_slow
+                        })
                 
             except Exception as e:
                 logger.error(f"Signal evaluation error for {product_id}: {e}")
@@ -445,6 +464,18 @@ class UnifiedScalperBot:
     def _execute_signal(self, signal: TradingSignal) -> bool:
         """Execute a trading signal"""
         try:
+            # Check circuit breaker
+            if not self._check_circuit_breaker():
+                log_signal({
+                    'product_id': signal.product_id,
+                    'action': signal.action,
+                    'confidence': signal.confidence,
+                    'reason': signal.reason,
+                    'executed': False,
+                    'rejection_reason': 'Circuit breaker active'
+                })
+                return False
+            
             snapshot = self.market_snapshots[signal.product_id]
             
             # Calculate position size
@@ -454,6 +485,14 @@ class UnifiedScalperBot:
             # Check capital constraints
             if signal.action == 'buy' and self.capital_remaining < position_size_usd:
                 logger.info(f"Insufficient capital for {signal.product_id}: ${position_size_usd:.2f} > ${self.capital_remaining:.2f}")
+                log_signal({
+                    'product_id': signal.product_id,
+                    'action': signal.action,
+                    'confidence': signal.confidence,
+                    'reason': signal.reason,
+                    'executed': False,
+                    'rejection_reason': f'Insufficient capital: ${position_size_usd:.2f} > ${self.capital_remaining:.2f}'
+                })
                 return False
             
             # Paper trading execution
@@ -555,6 +594,28 @@ class UnifiedScalperBot:
         
         # Record trade
         self.total_trades += 1
+        trade_pnl = pnl if signal.action == 'sell' else 0
+        
+        trade_data = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'product_id': signal.product_id,
+            'action': signal.action,
+            'size': size if signal.action == 'buy' else position['size'],
+            'price': execution_price,
+            'value': position_size_usd if signal.action == 'buy' else sell_value,
+            'reason': signal.reason,
+            'execution_type': 'PAPER',
+            'pnl': trade_pnl,
+            'cumulative_pnl': self.daily_pnl,
+            'position_size_after': self.positions.get(signal.product_id, {}).get('size', 0),
+            'capital_used': self.capital_used,
+            'capital_remaining': self.capital_remaining
+        }
+        
+        # Log to CSV
+        log_trade(trade_data)
+        
+        # Add to recent trades for UI
         self.recent_trades.append({
             'timestamp': datetime.now(timezone.utc),
             'product_id': signal.product_id,
@@ -563,6 +624,20 @@ class UnifiedScalperBot:
             'price': execution_price,
             'value': position_size_usd if signal.action == 'buy' else sell_value,
             'reason': signal.reason
+        })
+        
+        # Update circuit breaker state
+        self._update_circuit_breaker(trade_pnl)
+        
+        # Log successful signal
+        log_signal({
+            'product_id': signal.product_id,
+            'action': signal.action,
+            'confidence': signal.confidence,
+            'reason': signal.reason,
+            'executed': True,
+            'rejection_reason': '',
+            'spread_bps': snapshot.spread_bps
         })
         
         return True
@@ -863,6 +938,58 @@ class UnifiedScalperBot:
             self.ui.stop()
         
         logger.info(f"{Fore.GREEN}Shutdown complete. Final P&L: ${self.daily_pnl:.2f}{Style.RESET_ALL}")
+    
+    def _check_circuit_breaker(self) -> bool:
+        """Check if circuit breaker should prevent trading"""
+        now = datetime.now(timezone.utc)
+        
+        # Check if circuit breaker is active and still in effect
+        if self.circuit_breaker_active and self.circuit_breaker_until:
+            if now < self.circuit_breaker_until:
+                return False
+            else:
+                # Circuit breaker expired
+                self.circuit_breaker_active = False
+                self.circuit_breaker_until = None
+                self.consecutive_losses = 0
+                logger.info(f"{Fore.GREEN}Circuit breaker deactivated{Style.RESET_ALL}")
+        
+        # Check hourly trade limit
+        one_hour_ago = now - timedelta(hours=1)
+        recent_trades = [t for t in self.trades_this_hour if t > one_hour_ago]
+        
+        if len(recent_trades) >= MAX_TRADES_PER_HOUR:
+            logger.warning(f"{Fore.YELLOW}Hourly trade limit reached: {len(recent_trades)}/{MAX_TRADES_PER_HOUR}{Style.RESET_ALL}")
+            return False
+        
+        # Check consecutive losses
+        if self.consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
+            self._activate_circuit_breaker()
+            return False
+        
+        return True
+    
+    def _update_circuit_breaker(self, trade_pnl: float):
+        """Update circuit breaker state after a trade"""
+        now = datetime.now(timezone.utc)
+        
+        # Record trade time
+        self.trades_this_hour.append(now)
+        
+        # Update consecutive losses
+        if trade_pnl < 0:
+            self.consecutive_losses += 1
+            logger.debug(f"Consecutive losses: {self.consecutive_losses}/{MAX_CONSECUTIVE_LOSSES}")
+        else:
+            self.consecutive_losses = 0
+    
+    def _activate_circuit_breaker(self):
+        """Activate circuit breaker due to excessive losses"""
+        self.circuit_breaker_active = True
+        self.circuit_breaker_until = datetime.now(timezone.utc) + timedelta(minutes=30)
+        
+        logger.warning(f"{Fore.RED}CIRCUIT BREAKER ACTIVATED: Too many consecutive losses ({self.consecutive_losses}). "
+                      f"Trading suspended until {self.circuit_breaker_until.strftime('%H:%M:%S')}{Style.RESET_ALL}")
     
     def _close_all_positions(self):
         """Close all open positions"""
