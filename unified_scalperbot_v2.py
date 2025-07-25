@@ -27,17 +27,21 @@ colorama_init()
 
 # Import configuration
 from config_unified import (
-    CB_API_KEY, CB_API_SECRET, OPENAI_API_KEY,
+    COINBASE_API_KEY, COINBASE_API_SECRET, OPENAI_API_KEY,
     TRADING_PAIRS, BASE_POSITION_SIZE, MAX_POSITION_SIZE, INVENTORY_CAP_USD,
     STARTING_CAPITAL, MAX_DAILY_CAPITAL, RSI_BUY_THRESHOLD, RSI_SELL_THRESHOLD,
     SMA_FAST, SMA_SLOW, MIN_PRICE_HISTORY, MIN_SPREAD_BPS, MAX_SPREAD_BPS,
     PAPER_TRADING, MAX_TRADES_PER_HOUR, MAX_CONSECUTIVE_LOSSES,
     PROFIT_WITHDRAWAL_PERCENT, MIN_PROFIT_FOR_WITHDRAWAL,
+    USE_WS_FEED, POLL_INTERVAL_SEC,
     validate_config
 )
 
 # Import trade logger
 from trade_logger import get_trade_logger, log_trade, log_signal
+
+# Import Coinbase unified client
+from coinbase_client import get_coinbase_client
 
 # Validate configuration on startup
 config_errors = validate_config()
@@ -136,19 +140,32 @@ class UnifiedScalperBot:
     
     def _init_api_clients(self):
         """Initialize API clients"""
-        # Coinbase REST client
-        if not CB_API_KEY or not CB_API_SECRET:
+        # Coinbase unified client with WebSocket support
+        if not COINBASE_API_KEY or not COINBASE_API_SECRET:
             logger.warning(f"{Fore.YELLOW}No Coinbase API credentials found. Running in simulation mode.{Style.RESET_ALL}")
             self.rest_client = None
+            self.cb_client = None
         else:
             try:
-                self.rest_client = RESTClient(api_key=CB_API_KEY, api_secret=CB_API_SECRET)
+                # Get the unified Coinbase client
+                self.cb_client = get_coinbase_client()
+                
+                # Initialize WebSocket if enabled
+                if USE_WS_FEED:
+                    logger.info(f"{Fore.CYAN}Starting WebSocket feed for {len(TRADING_PAIRS)} products...{Style.RESET_ALL}")
+                    self.cb_client.start_websocket(TRADING_PAIRS)
+                    
+                # Keep REST client for compatibility
+                self.rest_client = RESTClient(api_key=COINBASE_API_KEY, api_secret=COINBASE_API_SECRET)
+                
                 # Test connection
-                self.rest_client.get_accounts()
-                logger.info(f"{Fore.GREEN}Coinbase API connected successfully{Style.RESET_ALL}")
+                accounts = self.cb_client.get_accounts()
+                logger.info(f"{Fore.GREEN}Coinbase API connected successfully - {len(accounts)} accounts found{Style.RESET_ALL}")
+                
             except Exception as e:
                 logger.error(f"Failed to connect to Coinbase API: {e}")
                 self.rest_client = None
+                self.cb_client = None
         
         # OpenAI client
         if OPENAI_API_KEY:
@@ -180,7 +197,75 @@ class UnifiedScalperBot:
     def _update_market_data(self):
         """Fetch latest market data"""
         try:
-            if self.rest_client:
+            if self.cb_client and USE_WS_FEED:
+                # Use WebSocket data if available
+                for product_id in TRADING_PAIRS:
+                    try:
+                        snapshot = self.market_snapshots[product_id]
+                        
+                        # Get best bid/ask from WebSocket
+                        best_bid, best_ask = self.cb_client.get_best_bid_ask(product_id)
+                        
+                        if best_bid and best_ask:
+                            snapshot.bid = best_bid
+                            snapshot.ask = best_ask
+                            snapshot.mid = (best_bid + best_ask) / 2
+                            
+                            # Calculate spread in basis points
+                            if snapshot.mid > 0:
+                                snapshot.spread_bps = ((snapshot.ask - snapshot.bid) / snapshot.mid) * 10000
+                                self.spread_history[product_id].append(snapshot.spread_bps)
+                        else:
+                            # Fallback to last trade price if order book not ready
+                            last_trade = self.cb_client.last_trades.get(product_id, {})
+                            if 'price' in last_trade:
+                                price = float(last_trade['price'])
+                                # Estimate bid/ask with small spread
+                                spread = price * 0.001  # 0.1% spread estimate
+                                snapshot.bid = price - spread/2
+                                snapshot.ask = price + spread/2
+                                snapshot.mid = price
+                                
+                                # Calculate spread
+                                if snapshot.mid > 0:
+                                    snapshot.spread_bps = (spread / snapshot.mid) * 10000
+                                    self.spread_history[product_id].append(snapshot.spread_bps)
+                        
+                        # Store price history if we have a valid mid price
+                        if snapshot.mid > 0:
+                            self.price_history[product_id].append({
+                                'price': snapshot.mid,
+                                'timestamp': datetime.now(timezone.utc)
+                            })
+                            
+                            # Calculate simple volatility
+                            if len(self.price_history[product_id]) > 10:
+                                recent_prices = [p['price'] for p in list(self.price_history[product_id])[-20:]]
+                                snapshot.volatility_1h = np.std(recent_prices) / np.mean(recent_prices) if np.mean(recent_prices) > 0 else 0
+                        
+                        # CRITICAL: Update the last update timestamp
+                        snapshot.last_update = datetime.now(timezone.utc)
+                        
+                        # Get 24h stats via REST (less frequently)
+                        current_time = datetime.now(timezone.utc)
+                        if not hasattr(snapshot, 'last_stats_update') or \
+                           (current_time - snapshot.last_stats_update).seconds > 60:
+                            ticker = self.rest_client.get_product(product_id)
+                            if ticker:
+                                snapshot.volume_24h = float(ticker.get('volume', 0))
+                                if 'price' in ticker and 'open_24h' in ticker:
+                                    current_price = float(ticker['price'])
+                                    open_price = float(ticker['open_24h'])
+                                    if open_price > 0:
+                                        snapshot.price_change_24h = ((current_price - open_price) / open_price) * 100
+                            snapshot.last_stats_update = current_time
+                        
+                    except Exception as e:
+                        logger.debug(f"Error updating {product_id}: {e}")
+                        self.errors_caught += 1
+                        
+            elif self.rest_client:
+                # Original REST-only implementation
                 for product_id in TRADING_PAIRS:
                     try:
                         # Get ticker data
@@ -326,18 +411,39 @@ class UnifiedScalperBot:
         """Generate trading signals"""
         signals = []
         
+        # Define allowed pairs by mode
+        if self.current_mode == "conservative":
+            allowed_pairs = ["BTC-USD", "ETH-USD"]  # Top 2 only
+        elif self.current_mode == "balanced":
+            allowed_pairs = ["BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "DOGE-USD"]  # Top 5
+        else:  # aggressive
+            allowed_pairs = TRADING_PAIRS  # All pairs
+        
         for product_id in TRADING_PAIRS:
+            # Skip if not allowed in current mode
+            if product_id not in allowed_pairs:
+                continue
+                
             try:
                 snapshot = self.market_snapshots[product_id]
                 
                 # Skip if no recent data
-                if (datetime.now(timezone.utc) - snapshot.last_update).seconds > 5:
+                if not hasattr(snapshot, 'last_update') or snapshot.last_update is None:
+                    logger.debug(f"Skipping {product_id}: No last_update timestamp")
+                    continue
+                    
+                time_since_update = (datetime.now(timezone.utc) - snapshot.last_update).total_seconds()
+                if time_since_update > 5:
+                    logger.debug(f"Skipping {product_id}: Data too old ({time_since_update:.1f}s)")
                     continue
                 
                 # Calculate indicators
                 indicators = self._calculate_indicators(product_id)
                 if not indicators:
-                    self.signal_rejections[product_id].append(f"Insufficient price history (<{MIN_PRICE_HISTORY})")
+                    self.signal_rejections[product_id].append({
+                        'reason': f"Insufficient price history (<{MIN_PRICE_HISTORY})",
+                        'time': time.time()
+                    })
                     continue
                 
                 # Check position limits
@@ -345,7 +451,10 @@ class UnifiedScalperBot:
                 position_value = current_position * snapshot.mid
                 
                 if position_value >= MAX_POSITION_SIZE:
-                    self.signal_rejections[product_id].append(f"Position limit reached (${position_value:.2f})")
+                    self.signal_rejections[product_id].append({
+                        'reason': f"Position limit reached (${position_value:.2f})",
+                        'time': time.time()
+                    })
                     continue
                 
                 # Dynamic spread threshold based on time and volatility
@@ -353,7 +462,10 @@ class UnifiedScalperBot:
                 
                 # Check spread
                 if snapshot.spread_bps > spread_threshold:
-                    self.signal_rejections[product_id].append(f"Spread too high ({snapshot.spread_bps:.1f} > {spread_threshold:.1f} bps)")
+                    self.signal_rejections[product_id].append({
+                        'reason': f"Spread too high ({snapshot.spread_bps:.1f} > {spread_threshold:.1f} bps)",
+                        'time': time.time()
+                    })
                     continue
                 
                 # Generate signals based on indicators
@@ -417,7 +529,10 @@ class UnifiedScalperBot:
                         rejection_reason = f"RSI neutral: {rsi:.1f}"
                     
                     if rejection_reason:
-                        self.signal_rejections[product_id].append(rejection_reason)
+                        self.signal_rejections[product_id].append({
+                            'reason': rejection_reason,
+                            'time': time.time()
+                        })
                         
                         # Log rejected signal
                         log_signal({
@@ -507,16 +622,32 @@ class UnifiedScalperBot:
             size = position_size_usd / snapshot.ask if signal.action == 'buy' else self.positions[signal.product_id]['size']
             
             try:
-                if signal.action == 'buy':
-                    order = self.rest_client.market_order_buy(
-                        product_id=signal.product_id,
-                        quote_size=str(position_size_usd)
-                    )
+                # Use CoinbaseClient for better retry logic and rate limiting
+                if self.cb_client:
+                    if signal.action == 'buy':
+                        order = self.cb_client.place_order(
+                            product_id=signal.product_id,
+                            side='buy',
+                            quote_size=str(position_size_usd)
+                        )
+                    else:
+                        order = self.cb_client.place_order(
+                            product_id=signal.product_id,
+                            side='sell',
+                            base_size=str(size)
+                        )
                 else:
-                    order = self.rest_client.market_order_sell(
-                        product_id=signal.product_id,
-                        base_size=str(size)
-                    )
+                    # Fallback to direct REST client
+                    if signal.action == 'buy':
+                        order = self.rest_client.market_order_buy(
+                            product_id=signal.product_id,
+                            quote_size=str(position_size_usd)
+                        )
+                    else:
+                        order = self.rest_client.market_order_sell(
+                            product_id=signal.product_id,
+                            base_size=str(size)
+                        )
                 
                 # Process executed order
                 if order and order.get('status') == 'filled':
@@ -723,21 +854,23 @@ class UnifiedScalperBot:
             }
             self.ui_integration.update_stats(stats)
             
-            # Update positions
-            position_list = []
+            # Update positions - convert to dict format expected by UI
+            positions_dict = {}
             for product_id, position in self.positions.items():
                 current_price = self.market_snapshots[product_id].mid
                 if current_price > 0:
-                    pnl = ((current_price - position['entry_price']) / position['entry_price']) * 100
-                    position_list.append({
-                        'product': product_id,
-                        'size': position['size'],
-                        'entry_price': position['entry_price'],
-                        'current_price': current_price,
-                        'pnl_percent': pnl,
-                        'value': position['size'] * current_price
-                    })
-            self.ui_integration.update_positions(position_list)
+                    base = position['size']
+                    avg_entry = position['entry_price']
+                    usd = base * current_price
+                    unrealized_pnl = usd - (base * avg_entry)
+                    
+                    positions_dict[product_id] = {
+                        'base': base,
+                        'avg_entry': avg_entry,
+                        'usd': usd,
+                        'unrealized_pnl': unrealized_pnl
+                    }
+            self.ui_integration.update_positions(positions_dict)
             
             # Update market overview
             market_data = {}
@@ -747,9 +880,9 @@ class UnifiedScalperBot:
                     'bid': snapshot.bid,
                     'ask': snapshot.ask,
                     'spread_bps': snapshot.spread_bps,
-                    'volume_24h': snapshot.volume_24h,
-                    'change_24h': snapshot.price_change_24h,
-                    'volatility': snapshot.volatility_1h * 100  # Convert to percentage
+                    'volume': snapshot.volume_24h,  # UI expects 'volume' not 'volume_24h'
+                    '24h_change': snapshot.price_change_24h,  # UI expects '24h_change' not 'change_24h'
+                    'volatility': snapshot.volatility_1h * 100 if snapshot.volatility_1h else 0  # Convert to percentage
                 }
             self.ui_integration.update_market_overview(market_data)
             
@@ -760,13 +893,27 @@ class UnifiedScalperBot:
             self.ui_integration.update_signal_health(dict(self.signal_rejections))
             
             # Update system health
+            # Check if all market data is fresh
+            market_data_healthy = True
+            try:
+                for snapshot in self.market_snapshots.values():
+                    if not hasattr(snapshot, 'last_update') or snapshot.last_update is None:
+                        market_data_healthy = False
+                        break
+                    if (datetime.now(timezone.utc) - snapshot.last_update).seconds > 10:
+                        market_data_healthy = False
+                        break
+            except Exception:
+                market_data_healthy = False
+                
             health = {
-                'rest_client': self.rest_client is not None,
-                'market_data': all(s.last_update > datetime.now(timezone.utc) - timedelta(seconds=10) 
-                                  for s in self.market_snapshots.values()),
-                'strategy_engine': True,  # Always true in unified bot
-                'ai_enabled': self.openai_client is not None,
+                'executor_healthy': self.rest_client is not None,
+                'strategy_healthy': True,  # Always true in unified bot
+                'market_data_healthy': market_data_healthy,
+                'ai_healthy': self.openai_client is not None,
                 'errors': self.errors_caught,
+                'uptime': time.time() - self.start_time,
+                'memory_mb': 0,  # TODO: Add memory tracking
                 'paper_trading': PAPER_TRADING
             }
             self.ui_integration.update_health(health)
@@ -921,6 +1068,14 @@ class UnifiedScalperBot:
     def _shutdown(self):
         """Clean shutdown"""
         logger.info(f"{Fore.YELLOW}Shutting down Unified ScalperBot...{Style.RESET_ALL}")
+        
+        # Stop WebSocket if running
+        if hasattr(self, 'cb_client') and self.cb_client:
+            try:
+                self.cb_client.stop_websocket()
+                logger.info("WebSocket feed stopped")
+            except Exception as e:
+                logger.error(f"Error stopping WebSocket: {e}")
         
         # Close all positions if configured
         if os.getenv('CLOSE_ON_EXIT', 'false').lower() == 'true' and not PAPER_TRADING:

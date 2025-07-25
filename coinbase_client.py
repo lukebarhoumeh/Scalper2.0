@@ -134,12 +134,12 @@ class CoinbaseWebSocketClient:
         """Subscribe to channels on connection"""
         logger.info("WebSocket connected")
         
-        # Subscribe only to public channels (ticker and matches)
-        # Note: level2, level3, and full channels require authentication
+        # Subscribe to public channels
+        # Note: level2 is actually a public channel for order book data
         subscribe_message = {
             "type": "subscribe",
             "product_ids": self.product_ids,
-            "channels": ["ticker", "matches"]
+            "channels": ["ticker", "matches", "level2"]
         }
         ws.send(json.dumps(subscribe_message))
         
@@ -257,6 +257,7 @@ class CoinbaseClient:
                     'best_bid': float(data.get('best_bid', 0)),
                     'best_ask': float(data.get('best_ask', 0))
                 }
+                logger.debug(f"Ticker update for {product_id}: bid={data.get('best_bid')}, ask={data.get('best_ask')}")
                 
     def _handle_match(self, data):
         """Handle trade matches"""
@@ -267,6 +268,15 @@ class CoinbaseClient:
         """Get best bid/ask from WebSocket feed or REST"""
         # Try WebSocket data first
         with self.lock:
+            # Check ticker data first (most up-to-date)
+            if product_id in self.last_trades:
+                ticker = self.last_trades[product_id]
+                best_bid = ticker.get('best_bid', 0)
+                best_ask = ticker.get('best_ask', 0)
+                if best_bid > 0 and best_ask > 0:
+                    return best_bid, best_ask
+            
+            # Check order book if available
             if product_id in self.order_books:
                 book = self.order_books[product_id]
                 best_bid = max(book['bids'].keys()) if book['bids'] else 0

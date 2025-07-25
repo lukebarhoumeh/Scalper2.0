@@ -13,8 +13,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─── API Credentials ─────────────────────────────────────────────────────────
-CB_API_KEY = os.getenv("CB_API_KEY")
-CB_API_SECRET = os.getenv("CB_API_SECRET")
+COINBASE_API_KEY = os.getenv("COINBASE_API_KEY")
+COINBASE_API_SECRET = os.getenv("COINBASE_API_SECRET")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # ─── Trading Universe ────────────────────────────────────────────────────────
@@ -120,10 +120,10 @@ def validate_config():
     """Validate configuration parameters"""
     errors = []
     
-    if not CB_API_KEY:
-        errors.append("CB_API_KEY not set")
-    if not CB_API_SECRET:
-        errors.append("CB_API_SECRET not set")
+    if not COINBASE_API_KEY:
+        errors.append("COINBASE_API_KEY not set")
+    if not COINBASE_API_SECRET:
+        errors.append("COINBASE_API_SECRET not set")
     if not OPENAI_API_KEY:
         errors.append("OPENAI_API_KEY not set")
         
@@ -147,7 +147,7 @@ def validate_config():
 def get_api_credentials():
     """Get API credentials with fallback"""
     return {
-        "api_key": CB_API_KEY,
-        "api_secret": CB_API_SECRET,
+        "api_key": COINBASE_API_KEY,
+        "api_secret": COINBASE_API_SECRET,
         "openai_key": OPENAI_API_KEY
     }
