@@ -11,75 +11,76 @@ COINBASE_API_SECRET=your_coinbase_api_secret_here
 OPENAI_API_KEY=your_openai_api_key_here
 
 # === TRADING CONFIGURATION ===
-# Comma-separated list of trading pairs
-TRADING_PAIRS=BTC-USD,ETH-USD,SOL-USD,AVAX-USD,DOGE-USD
+# Comma-separated list of trading pairs (high-liquidity recommended)
+TRADING_PAIRS=BTC-USD,ETH-USD,SOL-USD
 
 # Set to true for paper trading, false for live trading
 PAPER_TRADING=true
 
 # === POSITION SIZING ===
-# Base position size in USD per trade
-BASE_POSITION_SIZE=25.0
+# Base position size in USD per trade (risk-controlled sizing will cap this)
+BASE_POSITION_SIZE=50.0
 
 # Maximum position size in USD for any single asset
-MAX_POSITION_SIZE=75.0
+MAX_POSITION_SIZE=200.0
 
 # Maximum total inventory across all positions
-INVENTORY_CAP_USD=200.0
+INVENTORY_CAP_USD=2000.0
 
 # Starting capital for tracking P&L
-STARTING_CAPITAL=1000.0
+STARTING_CAPITAL=10000.0
 
-# Maximum daily capital to use
+# === STATE MANAGEMENT ===
+# Always start fresh (clear saved state) on startup
+RESET_STATE_ON_START=true
+
+# Maximum daily capital to use (not used by new engine)
 MAX_DAILY_CAPITAL=1500.0
 
 # === RISK MANAGEMENT ===
-# Risk per trade as percentage (0.01 = 1%)
-RISK_PERCENT=0.01
+# Risk per trade as percentage (e.g., 0.015 = 1.5%)
+RISK_PERCENT=0.015
 
-# Maximum total exposure as percentage of capital
+# Maximum total exposure as percentage of capital (not used by new engine)
 MAX_TOTAL_EXPOSURE=0.10
 
 # Maximum daily loss as percentage of starting capital
-MAX_DAILY_LOSS_PERCENT=0.10
+MAX_DAILY_LOSS_PERCENT=0.05
 
-# Risk/reward ratio for trades
+# Risk/reward ratio for trades (not used by new engine)
 RISK_REWARD_RATIO=1.0
 
 # === TECHNICAL INDICATORS ===
-# RSI thresholds
-RSI_BUY_THRESHOLD=35
-RSI_SELL_THRESHOLD=65
+# RSI thresholds (tighter = more trades)
+RSI_BUY_THRESHOLD=45
+RSI_SELL_THRESHOLD=55
 
 # Simple moving average periods
-SMA_FAST=5
-SMA_SLOW=20
+SMA_FAST=8
+SMA_SLOW=21
 
-# Minimum price history needed for indicators
+# Minimum price history needed for indicators (not used by new engine)
 MIN_PRICE_HISTORY=20
 
 # === SPREAD MANAGEMENT ===
-# Minimum spread in basis points (30 = 0.3%)
+# Minimum spread in basis points (not used by new engine)
 MIN_SPREAD_BPS=30
 
-# Maximum spread in basis points (150 = 1.5%)
-MAX_SPREAD_BPS=150
+# Maximum spread in basis points (200 = 2.0%)
+MAX_SPREAD_BPS=200
 
 # Maximum spread as percentage (0.002 = 0.2%)
 MAX_SPREAD_PERCENT=0.002
 
 # === API RATE LIMITING ===
-# Maximum API requests per second
+# Maximum API requests per second (not used by new engine)
 MAX_REQUESTS_PER_SECOND=8
 
-# WebSocket reconnect timeout in seconds
+# WebSocket reconnect timeout in seconds (not used by new engine)
 WS_RECONNECT_TIMEOUT=30
 
-# === STRATEGY WEIGHTS ===
-# Weight for scalping strategy (0.0-1.0)
+# === STRATEGY WEIGHTS === (not used by new engine)
 SCALPING_WEIGHT=0.6
-
-# Weight for breakout strategy (0.0-1.0)
 BREAKOUT_WEIGHT=0.4
 
 # === MARKET CONDITIONS ===
@@ -97,10 +98,10 @@ MAX_TRADES_PER_HOUR=20
 MAX_CONSECUTIVE_LOSSES=5
 
 # === EXECUTION PARAMETERS ===
-# Polling interval in seconds (for REST API mode)
-POLL_INTERVAL_SEC=30
+# Polling interval in seconds (engine tick cadence)
+POLL_INTERVAL_SEC=0.5
 
-# Use WebSocket feed for real-time data
+# Use WebSocket feed for real-time data (not used by new engine)
 USE_WS_FEED=true
 
 # === LOGGING ===
@@ -114,21 +115,32 @@ LOG_ROTATION_SIZE=10485760
 LOG_BACKUP_COUNT=5
 
 # === ACCOUNT MANAGEMENT ===
-# Initial capital for tracking
+# Initial capital for tracking (not used by new engine)
 INITIAL_CAPITAL=1000.0
 
-# Minimum working capital required
+# Minimum working capital required (not used by new engine)
 MIN_WORKING_CAPITAL=500.0
 
-# Profit threshold for withdrawal
+# Profit threshold for withdrawal (not used by new engine)
 PROFIT_WITHDRAWAL_THRESHOLD=50.0
 
-# Percentage of profit to withdraw
+# Percentage of profit to withdraw (not used by new engine)
 PROFIT_WITHDRAWAL_PERCENT=0.50
 
-# Minimum profit required for withdrawal
+# Minimum profit required for withdrawal (not used by new engine)
 MIN_PROFIT_FOR_WITHDRAWAL=50.0
 
 # === OPTIONAL SETTINGS ===
-# Close all positions on exit (true/false)
-CLOSE_ON_EXIT=false 
+# Close all positions on exit (true/false) (not used by new engine)
+CLOSE_ON_EXIT=false
+
+# === NEW ENGINE SETTINGS ===
+# Terminal UI refresh rate (hz)
+UI_REFRESH_HZ=5
+
+# Circuit breaker: max internal errors before halting (engine)
+MAX_ERRORS=50
+
+# Take-profit / Stop-loss in basis points
+TAKE_PROFIT_BPS=35
+STOP_LOSS_BPS=45
